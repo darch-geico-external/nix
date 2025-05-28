@@ -17,7 +17,8 @@ export NIX_FIRST_BUILD_UID="${NIX_FIRST_BUILD_UID:-351}"
 export NIX_BUILD_GROUP_ID="${NIX_BUILD_GROUP_ID:-350}"
 export NIX_BUILD_USER_NAME_TEMPLATE="_nixbld%d"
 
-readonly NIX_DAEMON_DEST=/Library/LaunchDaemons/org.nixos.nix-daemon.plist
+readonly NIX_SERVICE_NAME=org.nixos.nix-daemon
+readonly NIX_DAEMON_DEST="/Library/LaunchDaemons/$NIX_SERVICE_NAME.plist"
 # create by default; set 0 to DIY, use a symlink, etc.
 readonly NIX_VOLUME_CREATE=${NIX_VOLUME_CREATE:-1} # now default
 
@@ -115,10 +116,10 @@ poly_configure_nix_daemon_service() {
           /usr/bin/install -m "u=rw,go=r" "/nix/var/nix/profiles/default$NIX_DAEMON_DEST" "$NIX_DAEMON_DEST"
 
     _sudo "to load the LaunchDaemon plist for nix-daemon" \
-          launchctl load /Library/LaunchDaemons/org.nixos.nix-daemon.plist
+          launchctl load "$NIX_DAEMON_DEST"
 
     _sudo "to start the nix-daemon" \
-          launchctl kickstart -k system/org.nixos.nix-daemon
+          launchctl kickstart -k "system/$NIX_SERVICE_NAME"
 }
 
 poly_group_exists() {
