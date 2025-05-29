@@ -67,6 +67,49 @@ test_nix_daemon_installed() {
   test -e "$NIX_DAEMON_DEST"
 }
 
+filter_proxy_vars() {
+    vars="http_proxy https_proxy ftp_proxy all_proxy no_proxy HTTP_PROXY HTTPS_PROXY FTP_PROXY ALL_PROXY NO_PROXY"
+
+    local result=''
+    for v in $vars; do
+        if [[ -n "${v:-}" && -n "${!v:-}" ]]; then
+            result="$result ${v}"
+        fi
+    done
+
+    echo "$result"
+}
+
+# Gather all non-empty proxy environment variables into a plist
+create_darwin_proxy_env() {
+    local vars="$1"
+    local outfile="$SCRATCH/$(basename $NIX_DAEMON_DEST)"
+    local envarkey=EnvironmentVariables
+    cp "$NIX_DAEMON_DEST" "$outfile"
+    plutil -insert "$envarkey" -dictionary "$outfile"
+
+    for v in $vars; do
+        plutil -replace "$envarkey.${v}" -string "${!v}" "$outfile"
+    done
+
+    echo "$outfile"
+}
+
+add_proxies_to_service() {
+     header "Configuring proxy for the nix-daemon service"
+    _sudo "update service property list" /usr/bin/install -m "u=rw,go=r" "$1" "$NIX_DAEMON_DEST"
+}
+
+handle_network_proxy() {
+    local proxy_vars=$(filter_proxy_vars)
+    # Modify the service file to include proxy environment variables if any
+    # proxy environment variables are not empty.
+    if [[ -n "${proxy_vars}" ]]; then
+        proxy_file=$(create_darwin_proxy_env "$proxy_vars")
+        add_proxies_to_service "${proxy_file}"
+    fi
+}
+
 poly_cure_artifacts() {
     if should_create_volume; then
         task "Fixing any leftover Nix volume state"
@@ -114,6 +157,8 @@ poly_configure_nix_daemon_service() {
     task "Setting up the nix-daemon LaunchDaemon"
     _sudo "to set up the nix-daemon as a LaunchDaemon" \
           /usr/bin/install -m "u=rw,go=r" "/nix/var/nix/profiles/default$NIX_DAEMON_DEST" "$NIX_DAEMON_DEST"
+
+    handle_network_proxy
 
     _sudo "to load the LaunchDaemon plist for nix-daemon" \
           launchctl load "$NIX_DAEMON_DEST"
