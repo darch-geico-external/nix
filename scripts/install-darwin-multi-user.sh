@@ -17,7 +17,8 @@ export NIX_FIRST_BUILD_UID="${NIX_FIRST_BUILD_UID:-351}"
 export NIX_BUILD_GROUP_ID="${NIX_BUILD_GROUP_ID:-350}"
 export NIX_BUILD_USER_NAME_TEMPLATE="_nixbld%d"
 
-readonly NIX_DAEMON_DEST=/Library/LaunchDaemons/org.nixos.nix-daemon.plist
+readonly NIX_SERVICE_NAME=org.nixos.nix-daemon
+readonly NIX_DAEMON_DEST="/Library/LaunchDaemons/$NIX_SERVICE_NAME.plist"
 # create by default; set 0 to DIY, use a symlink, etc.
 readonly NIX_VOLUME_CREATE=${NIX_VOLUME_CREATE:-1} # now default
 
@@ -64,6 +65,49 @@ dsclattr() {
 
 test_nix_daemon_installed() {
   test -e "$NIX_DAEMON_DEST"
+}
+
+filter_proxy_vars() {
+    vars="http_proxy https_proxy ftp_proxy all_proxy no_proxy HTTP_PROXY HTTPS_PROXY FTP_PROXY ALL_PROXY NO_PROXY"
+
+    local result=''
+    for v in $vars; do
+        if [[ -n "${v:-}" && -n "${!v:-}" ]]; then
+            result="${result:+$result }${v}"
+        fi
+    done
+
+    echo "$result"
+}
+
+# Gather all non-empty proxy environment variables into a plist
+create_darwin_proxy_env() {
+    local vars="$1"
+    local outfile="$SCRATCH/$(basename $NIX_DAEMON_DEST)"
+    local envarkey=EnvironmentVariables
+    cp "$NIX_DAEMON_DEST" "$outfile"
+    plutil -insert "$envarkey" -dictionary "$outfile"
+
+    for v in $vars; do
+        plutil -replace "$envarkey.${v}" -string "${!v}" "$outfile"
+    done
+
+    echo "$outfile"
+}
+
+add_proxies_to_service() {
+     header "Configuring proxy for the nix-daemon service"
+    _sudo "update service property list" /usr/bin/install -m "u=rw,go=r" "$1" "$NIX_DAEMON_DEST"
+}
+
+add_network_proxies_to_nix_daemon_service() {
+    # Modify the service file to include proxy environment variables if any
+    # proxy environment variables are not empty.
+    local proxy_vars=$(filter_proxy_vars)
+    if [[ -n "${proxy_vars}" ]]; then
+        proxy_file=$(create_darwin_proxy_env "$proxy_vars")
+        add_proxies_to_service "${proxy_file}"
+    fi
 }
 
 poly_cure_artifacts() {
@@ -114,11 +158,13 @@ poly_configure_nix_daemon_service() {
     _sudo "to set up the nix-daemon as a LaunchDaemon" \
           /usr/bin/install -m "u=rw,go=r" "/nix/var/nix/profiles/default$NIX_DAEMON_DEST" "$NIX_DAEMON_DEST"
 
+    add_network_proxies_to_nix_daemon_service
+
     _sudo "to load the LaunchDaemon plist for nix-daemon" \
-          launchctl load /Library/LaunchDaemons/org.nixos.nix-daemon.plist
+          launchctl load "$NIX_DAEMON_DEST"
 
     _sudo "to start the nix-daemon" \
-          launchctl kickstart -k system/org.nixos.nix-daemon
+          launchctl kickstart -k "system/$NIX_SERVICE_NAME"
 }
 
 poly_group_exists() {
@@ -232,6 +278,17 @@ poly_create_build_user() {
           UniqueID "${uid}"
 }
 
+make_sudo_respect_proxies() {
+    local vars="$1"
+    local outfile="$SCRATCH/50-nix-proxy-envs"
+
+    cat << EOF > "$outfile"
+Defaults    env_keep += "$vars"
+EOF
+     header "Configuring sudo to pass through proxy variables"
+    _sudo "add sudoers fragment" /usr/bin/install -m "u=rw,go=" "$outfile" "/etc/sudoers.d"
+}
+
 poly_prepare_to_install() {
     if should_create_volume; then
         header "Preparing a Nix volume"
@@ -247,5 +304,10 @@ EOF
 
     if [ "$(/usr/sbin/diskutil info -plist /nix | xmllint --xpath "(/plist/dict/key[text()='GlobalPermissionsEnabled'])/following-sibling::*[1]" -)" = "<false/>" ]; then
         failure "This script needs a /nix volume with global permissions! This may require running sudo /usr/sbin/diskutil enableOwnership /nix."
+    fi
+
+    local proxy_vars=$(filter_proxy_vars)
+    if [[ -n "${proxy_vars}" ]]; then
+        make_sudo_respect_proxies "$proxy_vars"
     fi
 }
