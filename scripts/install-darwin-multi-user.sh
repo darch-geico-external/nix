@@ -73,7 +73,7 @@ filter_proxy_vars() {
     local result=''
     for v in $vars; do
         if [[ -n "${v:-}" && -n "${!v:-}" ]]; then
-            result="$result ${v}"
+            result="${result:+$result }${v}"
         fi
     done
 
@@ -100,10 +100,10 @@ add_proxies_to_service() {
     _sudo "update service property list" /usr/bin/install -m "u=rw,go=r" "$1" "$NIX_DAEMON_DEST"
 }
 
-handle_network_proxy() {
-    local proxy_vars=$(filter_proxy_vars)
+add_network_proxies_to_nix_daemon_service() {
     # Modify the service file to include proxy environment variables if any
     # proxy environment variables are not empty.
+    local proxy_vars=$(filter_proxy_vars)
     if [[ -n "${proxy_vars}" ]]; then
         proxy_file=$(create_darwin_proxy_env "$proxy_vars")
         add_proxies_to_service "${proxy_file}"
@@ -158,7 +158,7 @@ poly_configure_nix_daemon_service() {
     _sudo "to set up the nix-daemon as a LaunchDaemon" \
           /usr/bin/install -m "u=rw,go=r" "/nix/var/nix/profiles/default$NIX_DAEMON_DEST" "$NIX_DAEMON_DEST"
 
-    handle_network_proxy
+    add_network_proxies_to_nix_daemon_service
 
     _sudo "to load the LaunchDaemon plist for nix-daemon" \
           launchctl load "$NIX_DAEMON_DEST"
@@ -278,6 +278,17 @@ poly_create_build_user() {
           UniqueID "${uid}"
 }
 
+make_sudo_respect_proxies() {
+    local vars="$1"
+    local outfile="$SCRATCH/50-nix-proxy-envs"
+
+    cat << EOF > "$outfile"
+Defaults    env_keep += "$vars"
+EOF
+     header "Configuring sudo to pass through proxy variables"
+    _sudo "add sudoers fragment" /usr/bin/install -m "u=rw,go=" "$outfile" "/etc/sudoers.d"
+}
+
 poly_prepare_to_install() {
     if should_create_volume; then
         header "Preparing a Nix volume"
@@ -293,5 +304,10 @@ EOF
 
     if [ "$(/usr/sbin/diskutil info -plist /nix | xmllint --xpath "(/plist/dict/key[text()='GlobalPermissionsEnabled'])/following-sibling::*[1]" -)" = "<false/>" ]; then
         failure "This script needs a /nix volume with global permissions! This may require running sudo /usr/sbin/diskutil enableOwnership /nix."
+    fi
+
+    local proxy_vars=$(filter_proxy_vars)
+    if [[ -n "${proxy_vars}" ]]; then
+        make_sudo_respect_proxies "$proxy_vars"
     fi
 }
